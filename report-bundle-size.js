@@ -1,134 +1,72 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable no-console */
-/**
- * Copyright (c) HashiCorp, Inc.
- * SPDX-License-Identifier: MPL-2.0
- */
 
-// edited to work with the appdir by @raphaelbadia
-
-const gzSize = require("gzip-size")
-const mkdirp = require("mkdirp")
+const gzipSize = require("gzip-size")
+const mkdirp = require("mkdirp").sync
 const fs = require("fs")
 const path = require("path")
 
-// Pull options from `package.json`
-const options = getOptions()
-const BUILD_OUTPUT_DIRECTORY = getBuildOutputDirectory(options)
+const BUILD_DIR = path.join(process.cwd(), ".next")
 
-// first we check to make sure that the build output directory exists
-const nextMetaRoot = path.join(process.cwd(), BUILD_OUTPUT_DIRECTORY)
-try {
-  fs.accessSync(nextMetaRoot, fs.constants.R_OK)
-} catch (err) {
-  console.error(
-    `No build output found at "${nextMetaRoot}" - you may not have your working directory set correctly, or not have run "next build".`
-  )
+// 1. Sprawdź czy build istnieje
+if (!fs.existsSync(path.join(BUILD_DIR, "build-manifest.json"))) {
+  console.error("No Next.js build found – run `next build` first!")
   process.exit(1)
 }
 
-// if so, we can import the build manifest
-const buildMeta = require(path.join(nextMetaRoot, "build-manifest.json"))
-const appDirMeta = require(path.join(nextMetaRoot, "app-build-manifest.json"))
+const buildManifest = require(path.join(BUILD_DIR, "build-manifest.json"))
+const appManifest = require(path.join(BUILD_DIR, "app-build-manifest.json"))
 
-// this memory cache ensures we dont read any script file more than once
-// bundles are often shared between pages
-const memoryCache = {}
+// 2. Globalne chunk-i (rootMainFiles) – ładowane na każdej stronie
+const globalChunks = buildManifest.rootMainFiles || []
+const globalSizes = sumSizes(globalChunks)
 
-// since _app is the template that all other pages are rendered into,
-// every page must load its scripts. we'll measure its size here
-const globalBundle = buildMeta.pages["/_app"]
-const globalBundleSizes = getScriptSizes(globalBundle)
+// 3. Cache odczytów (żeby nie czytać dwa razy tych samych chunków)
+const cache = new Map()
 
-// next, we calculate the size of each page's scripts, after
-// subtracting out the global scripts
-const allPageSizes = Object.values(buildMeta.pages).reduce((acc, scriptPaths, i) => {
-  const pagePath = Object.keys(buildMeta.pages)[i]
-  const scriptSizes = getScriptSizes(scriptPaths.filter((scriptPath) => !globalBundle.includes(scriptPath)))
+function getFileSize(filePath) {
+  const fullPath = path.join(BUILD_DIR, filePath)
+  if (cache.has(fullPath)) return cache.get(fullPath)
 
-  acc[pagePath] = scriptSizes
+  const buffer = fs.readFileSync(fullPath)
+  const raw = buffer.byteLength
+  const gzip = gzipSize.sync(buffer)
+  cache.set(fullPath, { raw, gzip })
+  return { raw, gzip }
+}
 
-  return acc
-}, {})
-
-const globalAppDirBundle = buildMeta.rootMainFiles
-const globalAppDirBundleSizes = getScriptSizes(globalAppDirBundle)
-
-const allAppDirSizes = Object.values(appDirMeta.pages).reduce((acc, scriptPaths, i) => {
-  const pagePath = Object.keys(appDirMeta.pages)[i]
-  const scriptSizes = getScriptSizes(scriptPaths.filter((scriptPath) => !globalAppDirBundle.includes(scriptPath)))
-  acc[pagePath] = scriptSizes
-
-  return acc
-}, {})
-
-// format and write the output
-const rawData = JSON.stringify({
-  ...allAppDirSizes,
-  __global: globalAppDirBundleSizes,
-})
-
-// log ouputs to the gh actions panel
-console.log(rawData)
-
-mkdirp.sync(path.join(nextMetaRoot, "analyze/"))
-fs.writeFileSync(path.join(nextMetaRoot, "analyze/__bundle_analysis.json"), rawData)
-
-// --------------
-// Util Functions
-// --------------
-
-// given an array of scripts, return the total of their combined file sizes
-function getScriptSizes(scriptPaths) {
-  const res = scriptPaths.reduce(
-    (acc, scriptPath) => {
-      const [rawSize, gzipSize] = getScriptSize(scriptPath)
-      acc.raw += rawSize
-      acc.gzip += gzipSize
-
+function sumSizes(files) {
+  return files.reduce(
+    (acc, file) => {
+      const { raw, gzip } = getFileSize(file)
+      acc.raw += raw
+      acc.gzip += gzip
       return acc
     },
     { raw: 0, gzip: 0 }
   )
-
-  return res
 }
 
-// given an individual path to a script, return its file size
-function getScriptSize(scriptPath) {
-  const encoding = "utf8"
-  const p = path.join(nextMetaRoot, scriptPath)
+const result = { __global: globalSizes }
 
-  let rawSize, gzipSize
-  if (Object.keys(memoryCache).includes(p)) {
-    rawSize = memoryCache[p][0]
-    gzipSize = memoryCache[p][1]
-  } else {
-    const textContent = fs.readFileSync(p, encoding)
-    rawSize = Buffer.byteLength(textContent, encoding)
-    gzipSize = gzSize.sync(textContent)
-    memoryCache[p] = [rawSize, gzipSize]
-  }
-
-  return [rawSize, gzipSize]
+for (const [page, files] of Object.entries(appManifest.pages)) {
+  // Odejmujemy globalne chunk-i – nie chcemy ich liczyć drugi raz
+  const pageSpecificFiles = files.filter((f) => !globalChunks.includes(f))
+  result[page] = sumSizes(pageSpecificFiles)
 }
 
-/**
- * Reads options from `package.json`
- */
-function getOptions(pathPrefix = process.cwd()) {
-  const pkg = require(path.join(pathPrefix, "package.json"))
+mkdirp(path.join(BUILD_DIR, "analyze"))
+fs.writeFileSync(path.join(BUILD_DIR, "analyze/__bundle_analysis.json"), JSON.stringify(result, null, 2))
 
-  return { ...pkg.nextBundleAnalysis, name: pkg.name }
-}
+console.log("Bundle analysis (App Router only)")
+console.log(`Global bundle: ${format(globalSizes.gzip)} (gzip)`)
+console.log(`Pages analyzed: ${Object.keys(appManifest.pages).length}`)
+console.log(
+  `Total initial JS (first load): ${format(globalSizes.gzip + Object.values(result).reduce((a, b) => a + (b.gzip || 0), 0) - globalSizes.gzip)} (gzip)`
+)
 
-/**
- * Gets the output build directory, defaults to `.next`
- *
- * @param {object} options the options parsed from package.json.nextBundleAnalysis using `getOptions`
- * @returns {string}
- */
-function getBuildOutputDirectory(options) {
-  return options.buildOutputDirectory || ".next"
+function format(bytes) {
+  const kb = bytes / 1024
+  return kb < 1024 ? `${kb.toFixed(1)} kB` : `${(kb / 1024).toFixed(2)} MB`
 }
