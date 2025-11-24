@@ -1,25 +1,34 @@
 import type { Metadata } from "next"
 import Image from "next/image"
+import { useTranslations } from "next-intl"
+import { getTranslations } from "next-intl/server"
 
-export const metadata: Metadata = {
-  title: "Next.js Enterprise Boilerplate",
-  twitter: {
-    card: "summary_large_image",
-  },
-  openGraph: {
-    url: "https://next-enterprise.vercel.app/",
-    images: [
-      {
-        width: 1200,
-        height: 630,
-        // path to the image in .github/assets/project-logo.png
-        url: "https://raw.githubusercontent.com/Blazity/next-enterprise/main/.github/assets/project-logo.png",
-      },
-    ],
-  },
+export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }): Promise<Metadata> {
+  const { locale } = await params
+  const t = await getTranslations({ locale, namespace: "home" })
+
+  return {
+    title: t("title"),
+    description: t("description"),
+    twitter: {
+      card: "summary_large_image",
+    },
+    openGraph: {
+      url: "https://next-enterprise.vercel.app/",
+      images: [
+        {
+          width: 1200,
+          height: 630,
+          // path to the image in .github/assets/project-logo.png
+          url: "https://raw.githubusercontent.com/Blazity/next-enterprise/main/.github/assets/project-logo.png",
+        },
+      ],
+    },
+  }
 }
 
 export default function Home() {
+  const t = useTranslations("home")
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
       <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between bg-white px-16 py-32 sm:items-start dark:bg-black">
@@ -27,6 +36,7 @@ export default function Home() {
         <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
           <h1 className="max-w-xs text-3xl leading-10 font-semibold tracking-tight text-black dark:text-zinc-50">
             To get started, edit the page.tsx file.
+            {t("title")}
           </h1>
           <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
             Looking for a starting point or more instructions? Head over to{" "}
