@@ -15,7 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - run: echo "node_version=$(cat .github/nodejs.version)" >> $GITHUB_ENV
+
       - name: "use node ${{ env.node_version }}"
         uses: actions/setup-node@v3
         with:
@@ -30,10 +32,13 @@ jobs:
 
       - name: Lint check
         run: pnpm run lint
+
       - name: Format check
         run: pnpm run prettier
+
       - name: Unit & Integration tests
         run: pnpm run test
+
       - name: Smoke & Acceptance tests
         run: |
           pnpm run build-storybook --quiet
